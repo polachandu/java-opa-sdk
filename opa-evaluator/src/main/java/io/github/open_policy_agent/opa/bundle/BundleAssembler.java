@@ -1,0 +1,128 @@
+package io.github.open_policy_agent.opa.bundle;
+
+import io.github.open_policy_agent.opa.ast.types.RegoObject;
+import io.github.open_policy_agent.opa.ast.types.RegoString;
+import io.github.open_policy_agent.opa.ir.PolicyReader;
+import io.github.open_policy_agent.opa.storage.Store;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ServiceLoader;
+
+/**
+ * Processes individual bundle files and assembles them into a {@link Bundle}.
+ *
+ * <p>This class encapsulates the shared processing logic used by (file based) {@link BundleLoader}
+ * implementations. Loaders are responsible for file discovery/extraction and delegate the actual
+ * content processing here.
+ *
+ * <p>Supports nested {@code data.json} files: a file at {@code roles/data.json} contributes its
+ * contents under the {@code roles} key in the merged data tree.
+ *
+ * <p>Usage:
+ *
+ * <pre>{@code
+ * BundleAssembler assembler = new BundleAssembler();
+ * assembler.loadPlan(planInputStream);
+ * assembler.loadData("", rootDataStream);
+ * assembler.loadData("roles", nestedDataStream);
+ * assembler.loadManifest(manifestInputStream);
+ * assembler.addRego("policy.rego", regoSource);
+ * Bundle bundle = assembler.finish("myBundle", store);
+ * }</pre>
+ */
+public class BundleAssembler {
+  private static final ObjectMapper MAPPER = new ObjectMapper();
+  static final PolicyReader POLICY_READER =
+      ServiceLoader.load(PolicyReader.class)
+          .findFirst()
+          .orElseThrow(
+              () ->
+                  new IllegalStateException(
+                      "No PolicyReader implementation found on the classpath. "
+                          + "Add a module that provides PolicyReader (e.g. opa-jackson)."));
+
+  private final Bundle.Builder builder = new Bundle.Builder();
+  private RegoObject data;
+  private boolean hasContent;
+
+  /** Load a compiled IR policy from a {@code plan.json} stream. */
+  public void loadPlan(InputStream in) throws IOException {
+    builder.withIrPolicy(POLICY_READER.read(in));
+    hasContent = true;
+  }
+
+  /**
+   * Load data from a {@code data.json} at the given path within the bundle.
+   *
+   * <p>An empty path means root data. A path like {@code "roles"} places the parsed contents under
+   * {@code data.roles}. Multiple calls merge into the same data tree.
+   *
+   * @param path the directory path relative to the bundle root (empty string for root)
+   * @param in the data.json input stream
+   */
+  public void loadData(String path, InputStream in) throws IOException {
+    JsonNode root = MAPPER.readTree(in);
+    RegoObject parsed = MAPPER.treeToValue(root, RegoObject.class);
+
+    if (data == null) {
+      data = new RegoObject();
+    }
+
+    if (path.isEmpty()) {
+      data = data.merge(parsed);
+    } else {
+      String[] parts = path.split("/");
+      RegoObject current = data;
+      for (int i = 0; i < parts.length - 1; i++) {
+        RegoString key = new RegoString(parts[i]);
+        io.github.open_policy_agent.opa.ast.types.RegoValue existing = current.getProperty(key);
+        if (existing instanceof RegoObject) {
+          current = (RegoObject) existing;
+        } else {
+          RegoObject newObj = new RegoObject();
+          current.setProp(key, newObj);
+          current = newObj;
+        }
+      }
+      RegoString finalKey = new RegoString(parts[parts.length - 1]);
+      io.github.open_policy_agent.opa.ast.types.RegoValue existing = current.getProperty(finalKey);
+      if (existing instanceof RegoObject) {
+        current.setProp(finalKey, ((RegoObject) existing).merge(parsed));
+      } else {
+        current.setProp(finalKey, parsed);
+      }
+    }
+
+    hasContent = true;
+  }
+
+  /** Load bundle metadata from a {@code .manifest} stream. */
+  public void loadManifest(InputStream in) throws IOException {
+    builder.withManifest(MAPPER.readTree(in));
+  }
+
+  /** Add a Rego source file by its relative path. */
+  public void addRego(String path, String content) {
+    builder.withRego(path, content);
+  }
+
+  /**
+   * Validate, build the bundle, and write it to the store.
+   *
+   * @param id the bundle identifier used as the store key
+   * @param store the store to write the bundle and data into
+   * @return the assembled bundle
+   * @throws IllegalArgumentException if neither plan.json nor data.json was loaded
+   */
+  public Bundle finish(String id, Store store) {
+    if (!hasContent) {
+      throw new IllegalArgumentException("bundle must contain plan.json and/or data.json");
+    }
+    Bundle bundle = builder.build();
+    store.write(id, bundle, data != null ? data : new RegoObject());
+    return bundle;
+  }
+}

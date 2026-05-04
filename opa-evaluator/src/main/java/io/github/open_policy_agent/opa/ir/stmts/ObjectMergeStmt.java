@@ -1,0 +1,122 @@
+package io.github.open_policy_agent.opa.ir.stmts;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+
+/**
+ * ObjectMergeStmt performs a recursive merge of two object values. If either of the locals refer to
+ * non-object values this operation will abort with a conflict error. Overlapping object keys are
+ * merged recursively.
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+// subclasses have "same" @JsonDeserialize annotation as their parent class, therefore we add an
+// empty one to
+// avoid having the `StmtDeserializer` run again.
+@JsonDeserialize
+public class ObjectMergeStmt extends BaseStmt {
+    public static final String StmtType = "ObjectMergeStmt";
+
+    @JsonProperty("a")
+    private int a;
+
+    @JsonProperty("b")
+    private int b;
+
+    @JsonProperty("target")
+    private int target;
+
+    public ObjectMergeStmt() {
+    }
+
+    public ObjectMergeStmt(int a, int b, int target) {
+        this.a = a;
+        this.b = b;
+        this.target = target;
+    }
+
+  @Override
+  public STMT_TYPE getType() {
+    return STMT_TYPE.OBJECT_MERGE;
+    }
+
+  @Override
+  public int maxLocal() {
+    int max = a;
+    if (b > max) {
+      max = b;
+    }
+    if (target > max) {
+      max = target;
+    }
+    return max;
+  }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+
+        ObjectMergeStmt that = (ObjectMergeStmt) o;
+
+        if (a != that.a) return false;
+        if (b != that.b) return false;
+        if (target != that.target) return false;
+        if (getFile() != that.getFile()) return false;
+        if (getCol() != that.getCol()) return false;
+        return getRow() == that.getRow();
+    }
+
+    @Override
+    public int hashCode() {
+        int result = a;
+        result = 31 * result + b;
+        result = 31 * result + target;
+        result = 31 * result + getFile();
+        result = 31 * result + getCol();
+        result = 31 * result + getRow();
+        return result;
+    }
+
+    public int getA() {
+        return a;
+    }
+
+    public void setA(int a) {
+        this.a = a;
+    }
+
+    public int getB() {
+        return b;
+    }
+
+    public void setB(int b) {
+        this.b = b;
+    }
+
+    public int getTarget() {
+        return target;
+    }
+
+    public void setTarget(int target) {
+        this.target = target;
+    }
+
+    @Override
+    public String toString() {
+        return "ObjectMergeStmt{"
+                + "a="
+                + a
+                + ", b="
+                + b
+                + ", target="
+                + target
+                + ", file="
+                + getFile()
+                + ", col="
+                + getCol()
+                + ", row="
+                + getRow()
+                + '}';
+    }
+}
