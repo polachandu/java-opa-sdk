@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="GradleSettings">
+    <option name="linkedExternalProjectsSettings">
+      <GradleProjectSettings>
+        <option name="externalProjectPath" value="$PROJECT_DIR$" />
+        <option name="gradleJvm" value="17" />
+        <option name="modules">
+          <set>
+            <option value="$PROJECT_DIR$" />
+            <option value="$PROJECT_DIR$/opa-builtins" />
+            <option value="$PROJECT_DIR$/opa-builtins-crypto" />
+            <option value="$PROJECT_DIR$/opa-builtins-json" />
+            <option value="$PROJECT_DIR$/opa-builtins-net" />
+            <option value="$PROJECT_DIR$/opa-builtins-regex" />
+            <option value="$PROJECT_DIR$/opa-builtins-semver" />
+            <option value="$PROJECT_DIR$/opa-builtins-time" />
+            <option value="$PROJECT_DIR$/opa-builtins-token" />
+            <option value="$PROJECT_DIR$/opa-evaluator" />
+            <option value="$PROJECT_DIR$/opa-jackson" />
+            <option value="$PROJECT_DIR$/opa-services" />
+            <option value="$PROJECT_DIR$/opa-slf4j" />
+          </set>
+        </option>
+      </GradleProjectSettings>
+    </option>
+  </component>
+</project>

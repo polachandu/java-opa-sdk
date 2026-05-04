@@ -1,0 +1,7 @@
+{
+  "groups": {
+    "super": {
+      "privileged": true
+    }
+  }
+}
