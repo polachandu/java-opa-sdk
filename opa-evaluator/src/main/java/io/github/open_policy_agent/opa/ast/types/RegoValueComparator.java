@@ -16,6 +16,7 @@ import java.util.Comparator;
 public class RegoValueComparator implements Comparator<RegoValue> {
 
   @Override
+  @SuppressWarnings("PMD.CompareObjectsWithEquals")
   public int compare(RegoValue a, RegoValue b) {
     if (a == b) {
       return 0;

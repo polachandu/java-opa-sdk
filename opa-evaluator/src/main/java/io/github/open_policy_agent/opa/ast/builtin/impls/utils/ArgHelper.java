@@ -38,8 +38,7 @@ public class ArgHelper {
     }
 
     public static void assertArgType(RegoValue arg, int index, Class<?>... clazzs) {
-        for (int i = 0; i < clazzs.length; i++) {
-            Class<?> clazz = clazzs[i];
+        for (Class<?> clazz : clazzs) {
             if (clazz.isInstance(arg)) {
                 return;
             }

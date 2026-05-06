@@ -35,6 +35,7 @@ public class RegoSet implements RegoValue, RegoCollection {
   }
 
     @JsonValue
+    @SuppressWarnings("PMD.CompareObjectsWithEquals")
     public Set<RegoValue> getValue() {
     if (!sorted) {
       return value;

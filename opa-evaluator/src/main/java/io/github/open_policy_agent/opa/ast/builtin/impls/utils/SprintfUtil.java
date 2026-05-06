@@ -58,6 +58,7 @@ public class SprintfUtil {
         argIdx++;
     }
 
+    @SuppressWarnings("PMD.AvoidBranchingStatementAsLastInLoop")
     private String print() {
         if (format.isEmpty()) {
             return "";
