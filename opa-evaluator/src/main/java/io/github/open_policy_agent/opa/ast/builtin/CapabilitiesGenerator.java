@@ -38,15 +38,7 @@ public class CapabilitiesGenerator {
       }
     }
 
-    if (descriptors.size() > 0) {
-      Descriptor first = descriptors.get(0);
-    }
-
     capabilities.builtins = descriptors;
-
-    if (capabilities.builtins.size() > 0) {
-      Descriptor first = capabilities.builtins.get(0);
-    }
 
     return capabilities;
   }

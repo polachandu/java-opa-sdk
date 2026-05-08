@@ -4,3 +4,26 @@
  * This generated file contains a sample Java library project to get you started.
  * For more details on building Java & JVM projects, please refer to https://docs.gradle.org/8.14.4/userguide/building_java_projects.html in the Gradle documentation.
  */
+
+subprojects {
+    afterEvaluate {
+        if (plugins.hasPlugin("java") || plugins.hasPlugin("java-library")) {
+            apply(plugin = "checkstyle")
+            apply(plugin = "pmd")
+
+            configure<CheckstyleExtension> {
+                toolVersion = "10.21.4"
+                configFile = rootProject.file("config/checkstyle/checkstyle.xml")
+                isIgnoreFailures = false
+            }
+
+            configure<PmdExtension> {
+                toolVersion = "7.14.0"
+                isConsoleOutput = true
+                isIgnoreFailures = false
+                ruleSets = emptyList()
+                ruleSetFiles = rootProject.files("config/pmd/ruleset.xml")
+            }
+        }
+    }
+}

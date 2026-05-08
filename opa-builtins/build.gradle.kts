@@ -2,6 +2,10 @@ plugins {
     `java-library`
 }
 
+repositories {
+    mavenCentral()
+}
+
 dependencies {
     api(project(":opa-builtins:opa-builtins-time"))
     api(project(":opa-builtins:opa-builtins-token"))
