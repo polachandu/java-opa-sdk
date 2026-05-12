@@ -544,6 +544,34 @@ This SDK implements 139+ of OPA's ~180 builtin functions:
 
 For the full detailed list, see the [builtins README](opa-builtins/README.md).
 
+## Releasing
+
+Releases are automated via GitHub Actions. Pushing a tag triggers the [Publish Release](.github/workflows/post-tag.yaml) workflow which runs tests, publishes all modules to Maven Central, and creates a GitHub Release.
+
+### Creating a release
+
+1. Update the version in `gradle.properties`
+2. Commit and push to `main`
+3. Tag and push:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+The workflow will publish these artifacts to Maven Central:
+- `io.github.open-policy-agent:opa-evaluator`
+- `io.github.open-policy-agent:opa-jackson`
+- `io.github.open-policy-agent:opa-services`
+- `io.github.open-policy-agent:opa-builtins`
+- `io.github.open-policy-agent:opa-builtins-time`
+- `io.github.open-policy-agent:opa-builtins-token`
+- `io.github.open-policy-agent:opa-builtins-regex`
+- `io.github.open-policy-agent:opa-builtins-semver`
+- `io.github.open-policy-agent:opa-builtins-net`
+- `io.github.open-policy-agent:opa-builtins-crypto`
+- `io.github.open-policy-agent:opa-builtins-json`
+- `io.github.open-policy-agent:opa-slf4j`
+
 ## License
 
 Apache License 2.0
