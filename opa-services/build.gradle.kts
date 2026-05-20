@@ -9,7 +9,8 @@ repositories {
 dependencies {
     api(project(":opa-evaluator"))
 
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.17.0")
+    implementation(platform("com.fasterxml.jackson:jackson-bom:2.17.0"))
+    implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
     implementation("org.apache.commons:commons-compress:1.28.0")
