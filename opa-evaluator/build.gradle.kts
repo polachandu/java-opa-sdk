@@ -9,11 +9,9 @@ repositories {
 }
 
 dependencies {
-    // Jackson is a compile-only dependency: the Engine JsonNode API, Bundle.manifest,
-    // Capabilities, and IR class annotations require it at compile time.
-    // At runtime, jackson-databind is provided transitively via the opa-jackson module.
-    compileOnly("com.fasterxml.jackson.core:jackson-databind:2.17.0")
-
+    // The evaluator has no direct dependency on a JSON library. JSON IO is provided by external
+    // modules through SPIs (see Engine javadoc); opa-jackson is one such implementation, used here
+    // for testing.
     testImplementation(project(":opa-jackson"))
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.17.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
