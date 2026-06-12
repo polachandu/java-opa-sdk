@@ -12,6 +12,7 @@ plugins {
 
 rootProject.name = "java-opa-sdk"
 
+include("cli")
 include("opa-evaluator")
 include("opa-jackson")
 include("opa-gson")
