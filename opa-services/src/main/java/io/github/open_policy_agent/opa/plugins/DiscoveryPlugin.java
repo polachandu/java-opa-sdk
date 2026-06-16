@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
@@ -62,6 +61,8 @@ public final class DiscoveryPlugin implements Plugin {
       errors.add("Discovery has missing or empty resource path");
     }
 
+    errors.addAll(BundleDownloader.validatePolling(discovery.getPolling(), "Discovery"));
+
     return errors;
   }
 
@@ -69,17 +70,32 @@ public final class DiscoveryPlugin implements Plugin {
   public Plugin initialize(PluginManager manager) {
     DiscoveryPlugin plugin = new DiscoveryPlugin();
     plugin.manager = manager;
-    plugin.scheduler = Executors.newScheduledThreadPool(1, r -> {
-      Thread t = new Thread(r, "opa-discovery-scheduler");
-      t.setDaemon(true);
-      return t;
-    });
+    plugin.scheduler = BundleDownloader.newPollScheduler("opa-discovery-scheduler");
 
     Config.DiscoveryConfig discoveryConfig = manager.getConfig().getDiscovery();
     if (discoveryConfig != null) {
       String name = discoveryConfig.getName() != null ? discoveryConfig.getName() : "discovery";
+
+      ServicePlugin.Service svc = null;
+      Plugin raw = manager.getPlugin("services");
+      if (raw instanceof ServicePlugin) {
+        svc = ((ServicePlugin) raw).getService(discoveryConfig.getService());
+        // Validate caught the missing-service case earlier; assert defensively when the
+        // ServicePlugin IS registered but the lookup fails — never silently fall back to the
+        // default HTTP client and skip the configured TLS context.
+        if (svc == null) {
+          throw new PluginInitializationException(
+                  "Discovery plugin: service '"
+                      + discoveryConfig.getService()
+                      + "' not found in ServicePlugin")
+              .withContext("serviceName", discoveryConfig.getService());
+        }
+      }
+      // raw==null path: tests that wire DiscoveryPlugin directly without a ServicePlugin.
+      // svc stays null and BundleDownloader falls back to a default HTTP client.
+
       plugin.discoveryBundle =
-          new DiscoveryBundle(name, manager)
+          new DiscoveryBundle(name, manager, svc)
               .setService(discoveryConfig.getService())
               .setResource(discoveryConfig.getResource())
               .setPolling(discoveryConfig.getPolling());
@@ -141,8 +157,8 @@ public final class DiscoveryPlugin implements Plugin {
 
     private Config discoveredConfig; // Store the last successfully loaded config
 
-    private DiscoveryBundle(String name, PluginManager manager) {
-      super(name, manager);
+    private DiscoveryBundle(String name, PluginManager manager, ServicePlugin.Service service) {
+      super(name, manager, service);
     }
 
     @Override

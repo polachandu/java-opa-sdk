@@ -5,27 +5,27 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.Builder;
 import java.net.http.HttpResponse;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import io.github.open_policy_agent.opa.config.Config;
 import io.github.open_policy_agent.opa.logging.Logger;
+import io.github.open_policy_agent.opa.tls.SslContextBuilder;
 
 public final class ServicePlugin implements Plugin {
 
   private final Map<String, Service> services = new HashMap<>();
   private PluginManager manager;
+  private ScheduledExecutorService certReloadScheduler;
 
   public ServicePlugin() {}
 
-    public Set<String> validate(PluginManager manager) {
+  public Set<String> validate(PluginManager manager) {
     Set<String> errors = new HashSet<>();
 
     if (manager.getConfig().getServices() == null || manager.getConfig().getServices().isEmpty()) {
@@ -49,6 +49,114 @@ public final class ServicePlugin implements Plugin {
       if (credential != null && credential.getType().equals(Credential.Type.NOT_SUPPORTED)) {
         errors.add("Service '" + serviceName + "' has unsupported credential type");
       }
+
+      errors.addAll(validateTls(serviceName, service));
+    }
+    return errors;
+  }
+
+  private Set<String> validateTls(String serviceName, Config.ServiceConfig service) {
+    Set<String> errors = new HashSet<>();
+    Function<String, String> err = msg -> "Service '" + serviceName + "' " + msg;
+
+    Config.ClientTlsConfig clientTls =
+        service.getCredentials() == null ? null : service.getCredentials().getClientTls();
+    boolean hasServerTls = SslContextBuilder.hasServerTls(service);
+    boolean hasClientTls = SslContextBuilder.hasClientTls(service);
+    boolean hasProgrammatic = service.getSslContext() != null;
+
+    if (service.isAllowInsecureTLS() && (hasServerTls || hasClientTls || hasProgrammatic)) {
+      errors.add(err.apply("sets allow_insecure_tls=true alongside other TLS config; choose one"));
+    }
+
+    if (hasProgrammatic && (hasServerTls || hasClientTls)) {
+      errors.add(err.apply("sets programmatic SSLContext alongside file-based TLS config; choose one"));
+    }
+
+    Config.TlsConfig tlsBlock = service.getTls();
+    if (tlsBlock != null) {
+      boolean caCertSet = tlsBlock.getCaCert() != null && !tlsBlock.getCaCert().isEmpty();
+      Config.TruststoreConfig truststore = tlsBlock.getTruststore();
+      boolean truststoreSet = truststore != null
+          && (truststore.getKeyStore() != null
+              || (truststore.getPath() != null && !truststore.getPath().isEmpty()));
+
+      if (caCertSet && truststoreSet) {
+        errors.add(err.apply("tls block sets both ca_cert and truststore; choose one"));
+      }
+      if (!caCertSet && !truststoreSet && !tlsBlock.isSystemCaRequired()) {
+        errors.add(
+            err.apply(
+                "tls block has no effect: set ca_cert, truststore, or system_ca_required=true,"
+                    + " or remove the block"));
+      }
+      if (truststoreSet) {
+        errors.addAll(validateTruststore(serviceName, truststore));
+      }
+    }
+
+    if (clientTls != null) {
+      boolean certSet = clientTls.getCert() != null && !clientTls.getCert().isEmpty();
+      boolean keySet = clientTls.getPrivateKey() != null && !clientTls.getPrivateKey().isEmpty();
+      Config.KeystoreConfig keystore = clientTls.getKeystore();
+      boolean keystoreSet = keystore != null
+          && (keystore.getKeyStore() != null
+              || (keystore.getPath() != null && !keystore.getPath().isEmpty()));
+
+      if (keystoreSet && (certSet || keySet)) {
+        errors.add(
+            err.apply("credentials.client_tls sets both keystore and cert/private_key; choose one"));
+      }
+      if (!keystoreSet && certSet != keySet) {
+        errors.add(err.apply("credentials.client_tls must set both cert and private_key"));
+      }
+      if (!keySet
+          && clientTls.getPrivateKeyPassphrase() != null
+          && !clientTls.getPrivateKeyPassphrase().isEmpty()) {
+        errors.add(err.apply("credentials.client_tls.private_key_passphrase requires private_key"));
+      }
+      if (clientTls.getCertRereadIntervalSeconds() != null
+          && clientTls.getCertRereadIntervalSeconds() < 0) {
+        errors.add(err.apply("credentials.client_tls.cert_reread_interval_seconds must be >= 0"));
+      }
+      if (clientTls.getCertRereadIntervalSeconds() != null
+          && clientTls.getCertRereadIntervalSeconds() > 0
+          && (!certSet || !keySet)) {
+        errors.add(
+            err.apply(
+                "credentials.client_tls.cert_reread_interval_seconds requires both cert"
+                    + " and private_key"));
+      }
+      if (keystoreSet) {
+        errors.addAll(validateKeystore(serviceName, keystore));
+      }
+    }
+
+    // Path existence is intentionally NOT checked here. Certificate files may be rotated into
+    // place after startup (short-lived CM2 certs, discovery-driven config). The builder
+    // fails fast with a clear error on the first download if a path is missing or unreadable.
+
+    return errors;
+  }
+
+  private static Set<String> validateKeystore(String serviceName, Config.KeystoreConfig ks) {
+    Set<String> errors = new HashSet<>();
+    Function<String, String> err = msg -> "Service '" + serviceName + "' " + msg;
+    boolean pathSet = ks.getPath() != null && !ks.getPath().isEmpty();
+    boolean programmaticSet = ks.getKeyStore() != null;
+    if (pathSet && programmaticSet) {
+      errors.add(err.apply("credentials.client_tls.keystore sets both path and programmatic KeyStore; choose one"));
+    }
+    return errors;
+  }
+
+  private static Set<String> validateTruststore(String serviceName, Config.TruststoreConfig ts) {
+    Set<String> errors = new HashSet<>();
+    Function<String, String> err = msg -> "Service '" + serviceName + "' " + msg;
+    boolean pathSet = ts.getPath() != null && !ts.getPath().isEmpty();
+    boolean programmaticSet = ts.getKeyStore() != null;
+    if (pathSet && programmaticSet) {
+      errors.add(err.apply("tls.truststore sets both path and programmatic KeyStore; choose one"));
     }
     return errors;
   }
@@ -61,63 +169,66 @@ public final class ServicePlugin implements Plugin {
       return plugin;
     }
 
-    for (Map.Entry<String, Config.ServiceConfig> entry :
-        manager.getConfig().getServices().entrySet()) {
-      String serviceName = entry.getKey();
-      Config.ServiceConfig service = entry.getValue();
+    // Two threads so a slow reload (e.g. an NFS stall) on one service doesn't stall the others.
+    // This is a deliberate small pool; bump only if many services rotate.
+    plugin.certReloadScheduler =
+        BundleDownloader.newPollScheduler(2, "opa-service-cert-reload");
 
-      // Set the name from the map key if not already set
-      if (service.getName() == null || service.getName().isEmpty()) {
-        service.setName(serviceName);
-      }
+    try {
+      for (Map.Entry<String, Config.ServiceConfig> entry :
+          manager.getConfig().getServices().entrySet()) {
+        String serviceName = entry.getKey();
+        Config.ServiceConfig service = entry.getValue();
 
-      // Build HttpClient with optional insecure TLS support
-      HttpClient.Builder clientBuilder =
-          HttpClient.newBuilder()
-              .followRedirects(HttpClient.Redirect.NORMAL)
-              .version(HttpClient.Version.HTTP_2)
-              .connectTimeout(Duration.ofSeconds(service.getResponseHeaderTimeoutSeconds()));
+        if (service.getName() == null || service.getName().isEmpty()) {
+          service.setName(serviceName);
+        }
 
-      // Configure insecure TLS if enabled (for development/testing only)
-      if (service.isAllowInsecureTLS()) {
+        HttpClient.Builder clientBuilder =
+            HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .version(HttpClient.Version.HTTP_2)
+                .connectTimeout(Duration.ofSeconds(service.getResponseHeaderTimeoutSeconds()));
+
         try {
-          SSLContext sslContext = SSLContext.getInstance("TLS");
-          sslContext.init(
-              null,
-              new TrustManager[] {
-                new X509TrustManager() {
-                  public void checkClientTrusted(X509Certificate[] chain, String authType) {}
-
-                  public void checkServerTrusted(X509Certificate[] chain, String authType) {}
-
-                  public X509Certificate[] getAcceptedIssuers() {
-                    return new X509Certificate[0];
-                  }
-                }
-              },
-              new SecureRandom());
-
-          clientBuilder.sslContext(sslContext);
-          manager
-              .getLogger()
-              .warn(
-                  "Service '%s' has insecure TLS enabled - this should only be used in development",
-                  serviceName);
+          SslContextBuilder.Tls tls =
+              SslContextBuilder.build(service, plugin.certReloadScheduler, manager.getLogger());
+          if (tls.getSslContext() != null) {
+            clientBuilder.sslContext(tls.getSslContext());
+            if (service.isAllowInsecureTLS()) {
+              manager
+                  .getLogger()
+                  .warn(
+                      "Service '%s' has insecure TLS enabled - this should only be used in development",
+                      serviceName);
+            }
+          }
+          clientBuilder.sslParameters(tls.getSslParameters());
         } catch (Exception e) {
           throw new PluginInitializationException(
-                  "Failed to configure insecure TLS for service '" + serviceName + "'", e)
+                  "Failed to configure TLS for service '" + serviceName + "': " + e.getMessage(), e)
               .withContext("serviceName", serviceName);
         }
+
+        HttpClient client = clientBuilder.build();
+
+        plugin.services.put(
+            service.getName(),
+            Service.builder(client, manager.getLogger())
+                .name(service.getName())
+                .url(service.getUrl())
+                .responseHeaderTimeoutSeconds(service.getResponseHeaderTimeoutSeconds())
+                .allowInsecureTls(service.isAllowInsecureTLS())
+                .credentials(getCredential(service))
+                .headers(service.getHeaders())
+                .build());
       }
-
-      HttpClient client = clientBuilder.build();
-
-      plugin.services.put(
-          service.getName(),
-          new Service(client, manager.getLogger())
-              .setName(service.getName())
-              .setUrl(service.getUrl())
-              .setCredentials(getCredential(service)));
+    } catch (RuntimeException e) {
+      // Partial init failed: shut down the scheduler so any reload tasks already scheduled
+      // for earlier services don't outlive this initialize() call.
+      plugin.certReloadScheduler.shutdownNow();
+      plugin.certReloadScheduler = null;
+      throw e;
     }
 
     return plugin;
@@ -130,8 +241,18 @@ public final class ServicePlugin implements Plugin {
 
   @Override
   public void stop() {
-    // Services plugin has no resources to clean up (no scheduler)
     manager.getLogger().info("Stopping services plugin...");
+    if (certReloadScheduler != null) {
+      certReloadScheduler.shutdown();
+      try {
+        if (!certReloadScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+          certReloadScheduler.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        certReloadScheduler.shutdownNow();
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 
   /**
@@ -151,6 +272,11 @@ public final class ServicePlugin implements Plugin {
 
     if (service.getCredentials().getBearer() != null) {
       return new BearerCredential().setToken(service.getCredentials().getBearer().getToken());
+    }
+    // client_tls is handled at the SSLContext layer (not a per-request modifier), so it maps
+    // to no-op credentials at the HTTP level.
+    if (service.getCredentials().getClientTls() != null) {
+      return null;
     }
     return new Credential() {
       @Override
@@ -177,36 +303,51 @@ public final class ServicePlugin implements Plugin {
     }
   }
 
-  public static class Service {
+  /**
+   * A configured service, holding everything required to talk to it: the per-service {@link
+   * HttpClient} (with its SSLContext already wired), the URL, credentials, and any extra headers.
+   *
+   * <p>Construct via {@link #builder(HttpClient, Logger)}; instances are immutable after build.
+   */
+  public static final class Service {
     private final Logger logger;
-    private String name;
-    private String url;
-    private int responseHeaderTimeoutSeconds = 10;
-    private boolean allowInsecureTLS = false;
-    private Credential credentials;
+    private final String name;
+    private final String url;
+    private final int responseHeaderTimeoutSeconds;
+    private final boolean allowInsecureTLS;
+    private final Credential credentials;
     private final HttpClient client;
+    private final Map<String, String> headers;
 
-    private Service(HttpClient client, Logger logger) {
-      this.client = client;
-      this.logger = logger;
+    private Service(Builder b) {
+      this.client = b.client;
+      this.logger = b.logger;
+      this.name = b.name;
+      this.url = b.url;
+      this.responseHeaderTimeoutSeconds = b.responseHeaderTimeoutSeconds;
+      this.allowInsecureTLS = b.allowInsecureTls;
+      this.credentials = b.credentials;
+      this.headers = b.headers == null ? null : new HashMap<>(b.headers);
+    }
+
+    public static Builder builder(HttpClient client, Logger logger) {
+      return new Builder(client, logger);
     }
 
     void post(String path, String body) {
 
-      Builder builder =
+      HttpRequest.Builder request =
           HttpRequest.newBuilder()
               .uri(buildUri(path))
               .header("Content-Type", "application/json")
               .header("Accept", "application/json")
               .POST(HttpRequest.BodyPublishers.ofString(body));
 
-      if (credentials != null) {
-        builder = credentials.modifyRequest(builder);
-      }
-      HttpRequest request = builder.build();
+      request = applyCredentials(request);
+      request = applyHeaders(request);
 
       client
-          .sendAsync(request, HttpResponse.BodyHandlers.ofString())
+          .sendAsync(request.build(), HttpResponse.BodyHandlers.ofString())
           .thenAccept(
               resp -> {
                 logger.debug("POST request sent successfully: " + resp.statusCode());
@@ -216,6 +357,32 @@ public final class ServicePlugin implements Plugin {
                 logger.error("Failed to send POST request: " + e.getMessage());
                 return null;
               });
+    }
+
+    /**
+     * Apply this service's credentials to an in-progress request. No-op when no credentials are
+     * configured. Exposed so other plugins (e.g. bundle downloads) can use the same auth path as
+     * {@link #post}.
+     */
+    public HttpRequest.Builder applyCredentials(HttpRequest.Builder request) {
+      if (credentials != null) {
+        return credentials.modifyRequest(request);
+      }
+      return request;
+    }
+
+    /**
+     * Apply this service's user-supplied {@code headers} to a request. Uses {@code setHeader}
+     * (replace, not append) so user-supplied entries override built-in headers like
+     * {@code Authorization} rather than producing duplicates.
+     */
+    public HttpRequest.Builder applyHeaders(HttpRequest.Builder request) {
+      if (headers != null) {
+        for (Map.Entry<String, String> h : headers.entrySet()) {
+          request.setHeader(h.getKey(), h.getValue());
+        }
+      }
+      return request;
     }
 
     /**
@@ -258,45 +425,70 @@ public final class ServicePlugin implements Plugin {
       return name;
     }
 
-    public Service setName(String name) {
-      this.name = name;
-      return this;
-    }
-
     public String getUrl() {
       return url;
-    }
-
-    public Service setUrl(String url) {
-      this.url = url;
-      return this;
     }
 
     public int getResponseHeaderTimeoutSeconds() {
       return responseHeaderTimeoutSeconds;
     }
 
-    public Service setResponseHeaderTimeoutSeconds(int responseHeaderTimeoutSeconds) {
-      this.responseHeaderTimeoutSeconds = responseHeaderTimeoutSeconds;
-      return this;
-    }
-
     public boolean isAllowInsecureTls() {
       return allowInsecureTLS;
-    }
-
-    public Service setAllowInsecureTls(boolean allowInsecureTls) {
-      this.allowInsecureTLS = allowInsecureTls;
-      return this;
     }
 
     public Credential getCredentials() {
       return credentials;
     }
 
-    public Service setCredentials(Credential credentials) {
-      this.credentials = credentials;
-      return this;
+    public static final class Builder {
+      private final HttpClient client;
+      private final Logger logger;
+      private String name;
+      private String url;
+      private int responseHeaderTimeoutSeconds = 10;
+      private boolean allowInsecureTls = false;
+      private Credential credentials;
+      private Map<String, String> headers;
+
+      private Builder(HttpClient client, Logger logger) {
+        this.client = client;
+        this.logger = logger;
+      }
+
+      public Builder name(String name) {
+        this.name = name;
+        return this;
+      }
+
+      public Builder url(String url) {
+        this.url = url;
+        return this;
+      }
+
+      public Builder responseHeaderTimeoutSeconds(int seconds) {
+        this.responseHeaderTimeoutSeconds = seconds;
+        return this;
+      }
+
+      public Builder allowInsecureTls(boolean allow) {
+        this.allowInsecureTls = allow;
+        return this;
+      }
+
+      public Builder credentials(Credential credentials) {
+        this.credentials = credentials;
+        return this;
+      }
+
+      public Builder headers(Map<String, String> headers) {
+        this.headers = headers;
+        return this;
+      }
+
+      public Service build() {
+        return new Service(this);
+      }
     }
   }
 
