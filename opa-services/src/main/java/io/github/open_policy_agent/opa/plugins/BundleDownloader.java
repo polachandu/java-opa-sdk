@@ -1,18 +1,22 @@
 package io.github.open_policy_agent.opa.plugins;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -48,6 +52,7 @@ public abstract class BundleDownloader {
   protected Config.PollingConfig polling;
   protected String etag;
   protected long lastModifiedTime = 0;
+  protected long maxSizeBytes = 512 * 1024 * 1024L; // 512 MB default
 
   /**
    * Construct a BundleDownloader.
@@ -140,6 +145,11 @@ public abstract class BundleDownloader {
 
   public BundleDownloader setPolling(Config.PollingConfig polling) {
     this.polling = polling;
+    return this;
+  }
+
+  public BundleDownloader setMaxSizeBytes(long maxSizeBytes) {
+    this.maxSizeBytes = maxSizeBytes;
     return this;
   }
 
@@ -304,7 +314,7 @@ public abstract class BundleDownloader {
 
     HttpRequest request = requestBuilder.build();
     HttpResponse<byte[]> response =
-        httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        httpClient.send(request, sizeLimitedBodyHandler(maxSizeBytes));
 
     if (response.statusCode() == 304) {
       manager.getLogger().debug("Bundle '%s': Not modified (ETag match)", name);
@@ -315,6 +325,30 @@ public abstract class BundleDownloader {
     }
 
     if (response.statusCode() == 200) {
+      // Reject if Content-Length header already exceeds the limit (fast path before reading body)
+      String contentLength = response.headers().firstValue("Content-Length").orElse(null);
+      if (contentLength != null) {
+        long declared = Long.parseLong(contentLength);
+        if (declared > maxSizeBytes) {
+          String errorMsg =
+              "Content-Length " + declared + " exceeds limit of " + maxSizeBytes + " bytes";
+          manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
+          if (!initialActivation.isDone()) {
+            initialActivation.completeExceptionally(new BundleSizeLimitException(errorMsg));
+          }
+          return;
+        }
+      }
+
+      String contentType = response.headers().firstValue("Content-Type").orElse("");
+      if (!contentType.startsWith("application/vnd.openpolicyagent.bundles")) {
+        String errorMsg = "Unexpected Content-Type: '" + contentType + "'";
+        manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
+        if (!initialActivation.isDone()) {
+          initialActivation.completeExceptionally(new RuntimeException(errorMsg));
+        }
+        return;
+      }
       response.headers().firstValue("ETag").ifPresent(newEtag -> this.etag = newEtag);
       activateBundle(response.body());
       if (!initialActivation.isDone()) {
@@ -326,6 +360,74 @@ public abstract class BundleDownloader {
       if (!initialActivation.isDone()) {
         initialActivation.completeExceptionally(new RuntimeException(errorMsg));
       }
+    }
+  }
+
+  /**
+   * Returns a BodyHandler that accumulates response bytes into a byte array, throwing
+   * BundleSizeLimitException mid-stream if the total exceeds maxBytes.
+   */
+  private static HttpResponse.BodyHandler<byte[]> sizeLimitedBodyHandler(long maxBytes) {
+    return responseInfo -> {
+      SizeLimitedSubscriber subscriber = new SizeLimitedSubscriber(maxBytes);
+      return HttpResponse.BodySubscribers.fromSubscriber(subscriber, SizeLimitedSubscriber::getResult);
+    };
+  }
+
+  private static class SizeLimitedSubscriber implements Flow.Subscriber<List<ByteBuffer>> {
+    private final long maxBytes;
+    private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    private Flow.Subscription subscription;
+    private Throwable error;
+
+    SizeLimitedSubscriber(long maxBytes) {
+      this.maxBytes = maxBytes;
+    }
+
+    @Override
+    public void onSubscribe(Flow.Subscription s) {
+      this.subscription = s;
+      s.request(Long.MAX_VALUE);
+    }
+
+    @Override
+    public void onNext(List<ByteBuffer> items) {
+      for (ByteBuffer bb : items) {
+        byte[] chunk = new byte[bb.remaining()];
+        bb.get(chunk);
+        buffer.write(chunk, 0, chunk.length);
+        if (buffer.size() > maxBytes) {
+          subscription.cancel();
+          error =
+              new BundleSizeLimitException(
+                  "Response body exceeds limit of " + maxBytes + " bytes");
+          return;
+        }
+      }
+    }
+
+    @Override
+    public void onError(Throwable t) {
+      error = t;
+    }
+
+    @Override
+    public void onComplete() {}
+
+    byte[] getResult() {
+      if (error instanceof RuntimeException) {
+        throw (RuntimeException) error;
+      }
+      if (error != null) {
+        throw new RuntimeException(error);
+      }
+      return buffer.toByteArray();
+    }
+  }
+
+  static class BundleSizeLimitException extends RuntimeException {
+    BundleSizeLimitException(String message) {
+      super(message);
     }
   }
 

@@ -331,6 +331,9 @@ public class Config {
     private String service;
     private String resource;
 
+    @JsonProperty("max_size_bytes")
+    private long maxSizeBytes = 512 * 1024 * 1024L; // 512 MB default
+
     public PollingConfig getPolling() {
       return polling;
     }
@@ -358,6 +361,15 @@ public class Config {
       return this;
     }
 
+    public long getMaxSizeBytes() {
+      return maxSizeBytes;
+    }
+
+    public BundleConfig setMaxSizeBytes(long maxSizeBytes) {
+      this.maxSizeBytes = maxSizeBytes;
+      return this;
+    }
+
     @Override
     public String toString() {
       return "BundleConfig{"
@@ -369,6 +381,8 @@ public class Config {
           + ", resource='"
           + resource
           + '\''
+          + ", maxSizeBytes="
+          + maxSizeBytes
           + '}';
     }
   }

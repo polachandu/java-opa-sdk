@@ -11,20 +11,33 @@ import java.nio.file.Path;
 import java.util.zip.GZIPInputStream;
 
 public class TarballBundleLoader implements BundleLoader {
+  private static final long DEFAULT_MAX_DECOMPRESSED_SIZE = 512 * 1024 * 1024L; // 512 MB
+
   private final Path path;
   private final byte[] data;
   private final String id;
+  private final long maxDecompressedBytes;
 
   public TarballBundleLoader(String id, Path path) {
+    this(id, path, DEFAULT_MAX_DECOMPRESSED_SIZE);
+  }
+
+  public TarballBundleLoader(String id, Path path, long maxDecompressedBytes) {
     this.path = path;
     this.data = null;
     this.id = id;
+    this.maxDecompressedBytes = maxDecompressedBytes;
   }
 
   public TarballBundleLoader(String id, byte[] data) {
+    this(id, data, DEFAULT_MAX_DECOMPRESSED_SIZE);
+  }
+
+  public TarballBundleLoader(String id, byte[] data, long maxDecompressedBytes) {
     this.path = null;
     this.data = data;
     this.id = id;
+    this.maxDecompressedBytes = maxDecompressedBytes;
   }
 
   public Bundle load(Store store) {
@@ -59,26 +72,31 @@ public class TarballBundleLoader implements BundleLoader {
     try (GZIPInputStream gzipIn = new GZIPInputStream(in);
         TarArchiveInputStream tarIn = new TarArchiveInputStream(gzipIn, true)) {
       org.apache.commons.compress.archivers.tar.TarArchiveEntry entry;
+      long totalDecompressedBytes = 0;
       while ((entry = tarIn.getNextTarEntry()) != null) {
         String entryName =
             entry.getName().startsWith("/") ? entry.getName().substring(1) : entry.getName();
         if (!entry.isDirectory() && entryName.equals("plan.json")) {
-          byte[] entryBytes = tarIn.readAllBytes();
+          byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
+          totalDecompressedBytes += entryBytes.length;
           assembler.loadPlan(new ByteArrayInputStream(entryBytes));
         }
         if (!entry.isDirectory()
             && (entryName.equals("data.json") || entryName.endsWith("/data.json"))) {
-          byte[] entryBytes = tarIn.readAllBytes();
+          byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
+          totalDecompressedBytes += entryBytes.length;
           int lastSlash = entryName.lastIndexOf('/');
           String dataPath = lastSlash < 0 ? "" : entryName.substring(0, lastSlash);
           assembler.loadData(dataPath, new ByteArrayInputStream(entryBytes));
         }
         if (!entry.isDirectory() && entryName.equals(".manifest")) {
-          byte[] entryBytes = tarIn.readAllBytes();
+          byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
+          totalDecompressedBytes += entryBytes.length;
           assembler.loadManifest(new ByteArrayInputStream(entryBytes));
         }
         if (!entry.isDirectory() && entryName.endsWith(".rego")) {
-          byte[] entryBytes = tarIn.readAllBytes();
+          byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
+          totalDecompressedBytes += entryBytes.length;
           assembler.addRego(entryName, new String(entryBytes));
         }
       }
@@ -86,5 +104,18 @@ public class TarballBundleLoader implements BundleLoader {
     } catch (IOException e) {
       throw new IllegalArgumentException("Error extracting bundle: " + e.getMessage(), e);
     }
+  }
+
+  private static byte[] readWithLimit(InputStream in, long remaining) throws IOException {
+    if (remaining <= 0) {
+      throw new IOException(
+          "Decompressed bundle size exceeds the configured limit");
+    }
+    byte[] bytes = in.readNBytes((int) Math.min(remaining + 1, Integer.MAX_VALUE));
+    if (bytes.length > remaining) {
+      throw new IOException(
+          "Decompressed bundle size exceeds the configured limit");
+    }
+    return bytes;
   }
 }

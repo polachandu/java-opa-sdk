@@ -257,6 +257,51 @@ class TarballBundleLoaderTest {
     assertTrue(ex.getMessage().contains("No bundle path or data provided"));
   }
 
+  @Test
+  void load_decompressionBombExceedsLimit_throws() throws IOException {
+    // Single large entry that exceeds a small configured limit
+    String largeContent = "x".repeat(2000);
+    byte[] tarball = new TarballBuilder()
+        .addEntry("data.json", largeContent)
+        .build();
+
+    Store store = new InMem();
+    TarballBundleLoader loader = new TarballBundleLoader("test", tarball, 1000);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> loader.load(store));
+    assertTrue(ex.getMessage().contains("limit"), ex.getMessage());
+  }
+
+  @Test
+  void load_multipleEntriesExceedCumulativeLimit_throws() throws IOException {
+    // Each entry is within limit individually, but together they exceed it.
+    // Using .rego entries avoids JSON parsing so only the size limit triggers.
+    byte[] tarball = new TarballBuilder()
+        .addEntry("policy1.rego", "x".repeat(600))
+        .addEntry("policy2.rego", "x".repeat(600))
+        .build();
+
+    Store store = new InMem();
+    TarballBundleLoader loader = new TarballBundleLoader("test", tarball, 1000);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> loader.load(store));
+    assertTrue(ex.getMessage().contains("limit"), ex.getMessage());
+  }
+
+  @Test
+  void load_withinSizeLimit_succeeds() throws IOException {
+    byte[] tarball = new TarballBuilder()
+        .addEntry("data.json", "{\"key\":\"value\"}")
+        .build();
+
+    Store store = new InMem();
+    new TarballBundleLoader("test", tarball, 1024).load(store);
+
+    assertNotNull(store.getBundles().get("test"));
+  }
+
   /** Helper to build tar.gz byte arrays for testing. */
   private static class TarballBuilder {
     private final ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
