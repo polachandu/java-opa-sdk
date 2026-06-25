@@ -3,6 +3,7 @@ package io.github.open_policy_agent.opa.plugins;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -44,7 +45,7 @@ class BundleDownloaderSecurityTest {
     ExecutionException ex = assertThrows(ExecutionException.class,
         () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
             .get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("Content-Type"), ex.getCause().getMessage());
+    assertTrue(ex.getCause().getMessage().contains("Content-Type"));
   }
 
   @Test
@@ -59,7 +60,7 @@ class BundleDownloaderSecurityTest {
     ExecutionException ex = assertThrows(ExecutionException.class,
         () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
             .get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("Content-Type"), ex.getCause().getMessage());
+    assertTrue(ex.getCause().getMessage().contains("Content-Type"));
   }
 
   @Test
@@ -78,7 +79,7 @@ class BundleDownloaderSecurityTest {
     ExecutionException ex = assertThrows(ExecutionException.class,
         () -> runBundleDownload(server.getAddress().getPort(), smallLimit)
             .get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("exceeds limit"), ex.getCause().getMessage());
+    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
   }
 
   @Test
@@ -96,7 +97,7 @@ class BundleDownloaderSecurityTest {
     ExecutionException ex = assertThrows(ExecutionException.class,
         () -> runBundleDownload(server.getAddress().getPort(), smallLimit)
             .get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("exceeds limit"), ex.getCause().getMessage());
+    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
   }
 
   @Test
@@ -111,6 +112,58 @@ class BundleDownloaderSecurityTest {
 
     runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
         .get(10, TimeUnit.SECONDS);
+  }
+
+  @Test
+  void download_validBundleWithContentLengthWithinLimit_succeeds() throws Exception {
+    byte[] bundleData = createValidBundle();
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
+      exchange.getResponseHeaders().add("Content-Length", String.valueOf(bundleData.length));
+      exchange.sendResponseHeaders(200, bundleData.length);
+      exchange.getResponseBody().write(bundleData);
+      exchange.close();
+    });
+
+    runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+        .get(10, TimeUnit.SECONDS);
+  }
+
+  @Test
+  void download_notModified_succeeds() throws Exception {
+    server = startServer(exchange -> {
+      exchange.sendResponseHeaders(304, -1);
+      exchange.close();
+    });
+
+    runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+        .get(10, TimeUnit.SECONDS);
+  }
+
+  @Test
+  void download_serverError_fails() throws Exception {
+    server = startServer(exchange -> {
+      exchange.sendResponseHeaders(500, -1);
+      exchange.close();
+    });
+
+    ExecutionException ex = assertThrows(ExecutionException.class,
+        () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+            .get(10, TimeUnit.SECONDS));
+    assertTrue(ex.getCause().getMessage().contains("500"));
+  }
+
+  @Test
+  void download_notFound_fails() throws Exception {
+    server = startServer(exchange -> {
+      exchange.sendResponseHeaders(404, -1);
+      exchange.close();
+    });
+
+    ExecutionException ex = assertThrows(ExecutionException.class,
+        () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+            .get(10, TimeUnit.SECONDS));
+    assertTrue(ex.getCause().getMessage().contains("404"));
   }
 
   private CompletableFuture<Void> runBundleDownload(int port, long maxSizeBytes) {
@@ -144,15 +197,9 @@ class BundleDownloaderSecurityTest {
         .whenComplete((v, t) -> bundlePlugin.stop());
   }
 
-  private HttpServer startServer(HttpHandlerAction action) throws IOException {
+  private HttpServer startServer(HttpHandler handler) throws IOException {
     HttpServer httpServer = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
-    httpServer.createContext("/bundle.tar.gz", exchange -> {
-      try {
-        action.handle(exchange);
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
-    });
+    httpServer.createContext("/bundle.tar.gz", handler);
     httpServer.start();
     return httpServer;
   }
@@ -176,8 +223,4 @@ class BundleDownloaderSecurityTest {
     return byteOut.toByteArray();
   }
 
-  @FunctionalInterface
-  private interface HttpHandlerAction {
-    void handle(com.sun.net.httpserver.HttpExchange exchange) throws IOException;
-  }
 }

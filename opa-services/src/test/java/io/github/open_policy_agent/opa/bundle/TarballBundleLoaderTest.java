@@ -291,6 +291,22 @@ class TarballBundleLoaderTest {
   }
 
   @Test
+  void load_exactBudgetExhausted_throws() throws IOException {
+    // First entry consumes the entire budget exactly, second entry has remaining == 0
+    byte[] tarball = new TarballBuilder()
+        .addEntry("policy1.rego", "x".repeat(1000))
+        .addEntry("policy2.rego", "y".repeat(1))
+        .build();
+
+    Store store = new InMem();
+    TarballBundleLoader loader = new TarballBundleLoader("test", tarball, 1000);
+
+    IllegalArgumentException ex =
+        assertThrows(IllegalArgumentException.class, () -> loader.load(store));
+    assertTrue(ex.getMessage().contains("limit"));
+  }
+
+  @Test
   void load_withinSizeLimit_succeeds() throws IOException {
     byte[] tarball = new TarballBuilder()
         .addEntry("data.json", "{\"key\":\"value\"}")
