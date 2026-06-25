@@ -1,5 +1,6 @@
 package io.github.open_policy_agent.opa.bundle;
 
+import io.github.open_policy_agent.opa.config.Config;
 import io.github.open_policy_agent.opa.storage.Store;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 
@@ -11,7 +12,8 @@ import java.nio.file.Path;
 import java.util.zip.GZIPInputStream;
 
 public class TarballBundleLoader implements BundleLoader {
-  private static final long DEFAULT_MAX_DECOMPRESSED_SIZE = 512 * 1024 * 1024L; // 512 MB
+  private static final long DEFAULT_MAX_DECOMPRESSED_SIZE =
+      Config.BundleConfig.DEFAULT_MAX_SIZE_BYTES;
 
   private final Path path;
   private final byte[] data;

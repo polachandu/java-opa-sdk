@@ -14,6 +14,7 @@ import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Flow;
@@ -52,7 +53,22 @@ public abstract class BundleDownloader {
   protected Config.PollingConfig polling;
   protected String etag;
   protected long lastModifiedTime = 0;
-  protected long maxSizeBytes = 512 * 1024 * 1024L; // 512 MB default
+  protected long maxSizeBytes = Config.BundleConfig.DEFAULT_MAX_SIZE_BYTES;
+
+  // Content types accepted for bundle responses. The OPA server sends
+  // "application/vnd.openpolicyagent.bundles", but bundles are very commonly hosted on static
+  // object storage (S3, GCS, nginx) that serves tarballs as gzip/octet-stream, so those are
+  // accepted too. An absent/blank Content-Type is also tolerated. The point of the check is to
+  // reject obviously-wrong responses (e.g. an HTML error page or login redirect) before they are
+  // parsed as a bundle.
+  private static final Set<String> ALLOWED_CONTENT_TYPES =
+      Set.of(
+          "application/vnd.openpolicyagent.bundles",
+          "application/gzip",
+          "application/x-gzip",
+          "application/octet-stream",
+          "binary/octet-stream",
+          "application/x-tar");
 
   /**
    * Construct a BundleDownloader.
@@ -326,7 +342,7 @@ public abstract class BundleDownloader {
 
     if (response.statusCode() == 200) {
       String contentType = response.headers().firstValue("Content-Type").orElse("");
-      if (!contentType.startsWith("application/vnd.openpolicyagent.bundles")) {
+      if (!isAcceptableContentType(contentType)) {
         String errorMsg = "Unexpected Content-Type: '" + contentType + "'";
         manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
         if (!initialActivation.isDone()) {
@@ -346,6 +362,18 @@ public abstract class BundleDownloader {
         initialActivation.completeExceptionally(new RuntimeException(errorMsg));
       }
     }
+  }
+
+  /**
+   * Returns true if the response Content-Type is acceptable for a bundle. A blank/absent value is
+   * tolerated
+   */
+  private static boolean isAcceptableContentType(String contentType) {
+    if (contentType.isBlank()) {
+      return true;
+    }
+    String mediaType = contentType.split(";", 2)[0].strip().toLowerCase(Locale.ROOT);
+    return ALLOWED_CONTENT_TYPES.contains(mediaType);
   }
 
   /**

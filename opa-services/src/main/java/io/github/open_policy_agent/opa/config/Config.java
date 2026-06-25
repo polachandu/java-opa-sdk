@@ -327,12 +327,15 @@ public class Config {
   }
 
   public static class BundleConfig {
+    /** Default maximum bundle size (compressed download and decompressed contents): 512 MB. */
+    public static final long DEFAULT_MAX_SIZE_BYTES = 512L * 1024 * 1024;
+
     private PollingConfig polling;
     private String service;
     private String resource;
 
     @JsonProperty("max_size_bytes")
-    private long maxSizeBytes = 512 * 1024 * 1024L; // 512 MB default
+    private long maxSizeBytes = DEFAULT_MAX_SIZE_BYTES;
 
     public PollingConfig getPolling() {
       return polling;

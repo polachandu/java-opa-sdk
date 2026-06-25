@@ -1,5 +1,7 @@
 package io.github.open_policy_agent.opa.plugins;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -20,10 +22,12 @@ import org.junit.jupiter.api.Test;
 import io.github.open_policy_agent.opa.config.Config;
 import io.github.open_policy_agent.opa.logging.Logger;
 import io.github.open_policy_agent.opa.storage.InMem;
+import io.github.open_policy_agent.opa.storage.Store;
 
 class BundleDownloaderSecurityTest {
 
   private HttpServer server;
+  private Store store;
 
   @AfterEach
   void tearDown() {
@@ -36,7 +40,7 @@ class BundleDownloaderSecurityTest {
   void download_wrongContentType_fails() throws Exception {
     byte[] bundleData = createValidBundle();
     server = startServer(exchange -> {
-      exchange.getResponseHeaders().add("Content-Type", "application/octet-stream");
+      exchange.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
       exchange.sendResponseHeaders(200, bundleData.length);
       exchange.getResponseBody().write(bundleData);
       exchange.close();
@@ -49,7 +53,7 @@ class BundleDownloaderSecurityTest {
   }
 
   @Test
-  void download_missingContentType_fails() throws Exception {
+  void download_missingContentType_succeeds() throws Exception {
     byte[] bundleData = createValidBundle();
     server = startServer(exchange -> {
       exchange.sendResponseHeaders(200, bundleData.length);
@@ -57,10 +61,40 @@ class BundleDownloaderSecurityTest {
       exchange.close();
     });
 
-    ExecutionException ex = assertThrows(ExecutionException.class,
-        () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
-            .get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("Content-Type"));
+    runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+        .get(10, TimeUnit.SECONDS);
+    assertNotNull(store.getBundles().get("authz"));
+  }
+
+  @Test
+  void download_alternateContentType_succeeds() throws Exception {
+    byte[] bundleData = createValidBundle();
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders().add("Content-Type", "application/gzip");
+      exchange.sendResponseHeaders(200, bundleData.length);
+      exchange.getResponseBody().write(bundleData);
+      exchange.close();
+    });
+
+    runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+        .get(10, TimeUnit.SECONDS);
+    assertNotNull(store.getBundles().get("authz"));
+  }
+
+  @Test
+  void download_contentTypeWithParametersAndCasing_succeeds() throws Exception {
+    byte[] bundleData = createValidBundle();
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders()
+          .add("Content-Type", "Application/VND.OpenPolicyAgent.Bundles; charset=utf-8");
+      exchange.sendResponseHeaders(200, bundleData.length);
+      exchange.getResponseBody().write(bundleData);
+      exchange.close();
+    });
+
+    runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+        .get(10, TimeUnit.SECONDS);
+    assertNotNull(store.getBundles().get("authz"));
   }
 
   @Test
@@ -93,6 +127,7 @@ class BundleDownloaderSecurityTest {
 
     runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
         .get(10, TimeUnit.SECONDS);
+    assertNotNull(store.getBundles().get("authz"));
   }
 
   @Test
@@ -108,6 +143,7 @@ class BundleDownloaderSecurityTest {
 
     runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
         .get(10, TimeUnit.SECONDS);
+    assertNotNull(store.getBundles().get("authz"));
   }
 
   @Test
@@ -119,6 +155,8 @@ class BundleDownloaderSecurityTest {
 
     runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
         .get(10, TimeUnit.SECONDS);
+    // 304 means "not modified" — no bundle should have been activated into the store.
+    assertNull(store.getBundles().get("authz"));
   }
 
   @Test
@@ -179,10 +217,11 @@ class BundleDownloaderSecurityTest {
     config.setBundles(Collections.singletonMap("authz", bundleCfg));
 
     Logger logger = new Logger.StandardLogger();
+    this.store = new InMem();
     PluginManager manager =
         new PluginManager.Builder()
             .withId("test")
-            .withStore(new InMem())
+            .withStore(store)
             .withConfig(config)
             .withLogger(logger)
             .build();
