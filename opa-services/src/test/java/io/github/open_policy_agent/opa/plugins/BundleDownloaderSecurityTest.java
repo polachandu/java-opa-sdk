@@ -64,25 +64,6 @@ class BundleDownloaderSecurityTest {
   }
 
   @Test
-  void download_contentLengthExceedsLimit_fails() throws Exception {
-    byte[] bundleData = createValidBundle();
-    server = startServer(exchange -> {
-      exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
-      exchange.getResponseHeaders().add("Content-Length", String.valueOf(bundleData.length));
-      exchange.sendResponseHeaders(200, bundleData.length);
-      exchange.getResponseBody().write(bundleData);
-      exchange.close();
-    });
-
-    // Set limit smaller than the bundle
-    long smallLimit = bundleData.length - 1;
-    ExecutionException ex = assertThrows(ExecutionException.class,
-        () -> runBundleDownload(server.getAddress().getPort(), smallLimit)
-            .get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
-  }
-
-  @Test
   void download_bodyExceedsLimitMidStream_fails() throws Exception {
     byte[] bundleData = createValidBundle();
     server = startServer(exchange -> {
@@ -164,6 +145,23 @@ class BundleDownloaderSecurityTest {
         () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
             .get(10, TimeUnit.SECONDS));
     assertTrue(ex.getCause().getMessage().contains("404"));
+  }
+
+  @Test
+  void download_connectionDroppedMidStream_fails() throws Exception {
+    byte[] bundleData = createValidBundle();
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
+      exchange.sendResponseHeaders(200, bundleData.length * 2L);
+      // Write partial data then abruptly close, simulating a dropped connection
+      exchange.getResponseBody().write(bundleData);
+      exchange.getResponseBody().flush();
+      exchange.close();
+    });
+
+    assertThrows(ExecutionException.class,
+        () -> runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
+            .get(10, TimeUnit.SECONDS));
   }
 
   private CompletableFuture<Void> runBundleDownload(int port, long maxSizeBytes) {

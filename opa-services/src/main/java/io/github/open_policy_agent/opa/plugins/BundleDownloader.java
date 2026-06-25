@@ -325,21 +325,6 @@ public abstract class BundleDownloader {
     }
 
     if (response.statusCode() == 200) {
-      // Reject if Content-Length header already exceeds the limit (fast path before reading body)
-      String contentLength = response.headers().firstValue("Content-Length").orElse(null);
-      if (contentLength != null) {
-        long declared = Long.parseLong(contentLength);
-        if (declared > maxSizeBytes) {
-          String errorMsg =
-              "Content-Length " + declared + " exceeds limit of " + maxSizeBytes + " bytes";
-          manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
-          if (!initialActivation.isDone()) {
-            initialActivation.completeExceptionally(new BundleSizeLimitException(errorMsg));
-          }
-          return;
-        }
-      }
-
       String contentType = response.headers().firstValue("Content-Type").orElse("");
       if (!contentType.startsWith("application/vnd.openpolicyagent.bundles")) {
         String errorMsg = "Unexpected Content-Type: '" + contentType + "'";
@@ -408,7 +393,9 @@ public abstract class BundleDownloader {
 
     @Override
     public void onError(Throwable t) {
-      error = t;
+      if (error == null) {
+        error = t;
+      }
     }
 
     @Override

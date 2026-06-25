@@ -270,7 +270,7 @@ class TarballBundleLoaderTest {
 
     IllegalArgumentException ex =
         assertThrows(IllegalArgumentException.class, () -> loader.load(store));
-    assertTrue(ex.getMessage().contains("limit"), ex.getMessage());
+    assertTrue(ex.getMessage().contains("limit"));
   }
 
   @Test
@@ -287,7 +287,7 @@ class TarballBundleLoaderTest {
 
     IllegalArgumentException ex =
         assertThrows(IllegalArgumentException.class, () -> loader.load(store));
-    assertTrue(ex.getMessage().contains("limit"), ex.getMessage());
+    assertTrue(ex.getMessage().contains("limit"));
   }
 
   @Test
