@@ -1,23 +1,20 @@
 package io.github.open_policy_agent.opa.plugins;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Flow;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -82,10 +79,18 @@ public abstract class BundleDownloader {
    */
   protected BundleDownloader(
       String name, PluginManager manager, ServicePlugin.Service authService) {
+    this(name, manager, authService,
+        authService != null ? authService.getClient() : defaultHttpClient());
+  }
+
+  // Package-private — allows tests in the same package to inject a custom HttpClient without
+  // going through ServicePlugin wiring.
+  BundleDownloader(
+      String name, PluginManager manager, ServicePlugin.Service authService, HttpClient client) {
     this.name = name;
     this.manager = manager;
     this.authService = authService;
-    this.httpClient = authService != null ? authService.getClient() : defaultHttpClient();
+    this.httpClient = client;
     this.initialActivation = new CompletableFuture<>();
   }
 
@@ -310,9 +315,16 @@ public abstract class BundleDownloader {
   /**
    * Handle downloading from an HTTP/HTTPS URI.
    *
-   * @param uri the URI to download from
+   * <p>Uses {@link HttpClient#sendAsync} with a non-blocking {@code whenComplete} callback so that
+   * the scheduler thread is never blocked waiting for the response body. This is required for the
+   * mid-stream size limit to work: completing the body subscriber's future exceptionally in {@code
+   * onNext()} causes the {@code sendAsync()} {@link CompletableFuture} to complete immediately —
+   * without waiting for the remaining body bytes to arrive — and the callback processes the result.
+   * Blocking calls ({@code send()} or {@code sendAsync().get()}) always wait for the HTTP exchange
+   * to be fully done (all bytes consumed or connection closed), even if the body subscriber's
+   * future already completed.
    */
-  private void handleHttpDownload(URI uri) throws IOException, InterruptedException {
+  private void handleHttpDownload(URI uri) {
     HttpRequest.Builder requestBuilder =
         HttpRequest.newBuilder()
             .uri(uri)
@@ -329,39 +341,77 @@ public abstract class BundleDownloader {
     }
 
     HttpRequest request = requestBuilder.build();
-    HttpResponse<byte[]> response =
-        httpClient.send(request, sizeLimitedBodyHandler(maxSizeBytes));
+    httpClient
+        .sendAsync(request, sizeLimitedBodyHandler(maxSizeBytes))
+        .whenComplete(
+            (response, throwable) -> {
+              if (throwable != null) {
+                Throwable cause =
+                    throwable instanceof java.util.concurrent.CompletionException
+                        ? throwable.getCause()
+                        : throwable;
+                manager.getLogger().error("Bundle '%s': Download error: %s", name, cause.getMessage());
+                if (!initialActivation.isDone()) {
+                  initialActivation.completeExceptionally(cause);
+                }
+                return;
+              }
 
-    if (response.statusCode() == 304) {
-      manager.getLogger().debug("Bundle '%s': Not modified (ETag match)", name);
-      if (!initialActivation.isDone()) {
-        initialActivation.complete(null);
-      }
-      return;
-    }
+              if (response.statusCode() == 304) {
+                manager.getLogger().debug("Bundle '%s': Not modified (ETag match)", name);
+                if (!initialActivation.isDone()) {
+                  initialActivation.complete(null);
+                }
+                return;
+              }
 
-    if (response.statusCode() == 200) {
-      String contentType = response.headers().firstValue("Content-Type").orElse("");
-      if (!isAcceptableContentType(contentType)) {
-        String errorMsg = "Unexpected Content-Type: '" + contentType + "'";
-        manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
-        if (!initialActivation.isDone()) {
-          initialActivation.completeExceptionally(new RuntimeException(errorMsg));
-        }
-        return;
-      }
-      response.headers().firstValue("ETag").ifPresent(newEtag -> this.etag = newEtag);
-      activateBundle(response.body());
-      if (!initialActivation.isDone()) {
-        initialActivation.complete(null);
-      }
-    } else {
-      String errorMsg = "Download failed with status " + response.statusCode();
-      manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
-      if (!initialActivation.isDone()) {
-        initialActivation.completeExceptionally(new RuntimeException(errorMsg));
-      }
-    }
+              if (response.statusCode() == 200) {
+                String contentType = response.headers().firstValue("Content-Type").orElse("");
+                if (!isAcceptableContentType(contentType)) {
+                  String errorMsg = "Unexpected Content-Type: '" + contentType + "'";
+                  manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
+                  if (!initialActivation.isDone()) {
+                    initialActivation.completeExceptionally(new RuntimeException(errorMsg));
+                  }
+                  return;
+                }
+                byte[] body = response.body();
+                if (body == null) {
+                  // The body-handler mapping function threw (size limit exceeded), but some JDK
+                  // versions complete sendAsync() normally with a null body instead of propagating
+                  // the exception. Treat null body as a size limit violation.
+                  BundleSizeLimitException ex =
+                      new BundleSizeLimitException(
+                          "Response body exceeds limit of "
+                              + Math.min(maxSizeBytes, Integer.MAX_VALUE)
+                              + " bytes");
+                  manager.getLogger().error("Bundle '%s': Download error: %s", name, ex.getMessage());
+                  if (!initialActivation.isDone()) {
+                    initialActivation.completeExceptionally(ex);
+                  }
+                  return;
+                }
+                response.headers().firstValue("ETag").ifPresent(newEtag -> this.etag = newEtag);
+                try {
+                  activateBundle(body);
+                } catch (Exception e) {
+                  manager.getLogger().error("Bundle '%s': Activation failed: %s", name, e.getMessage());
+                  if (!initialActivation.isDone()) {
+                    initialActivation.completeExceptionally(e);
+                  }
+                  return;
+                }
+                if (!initialActivation.isDone()) {
+                  initialActivation.complete(null);
+                }
+              } else {
+                String errorMsg = "Download failed with status " + response.statusCode();
+                manager.getLogger().error("Bundle '%s': %s", name, errorMsg);
+                if (!initialActivation.isDone()) {
+                  initialActivation.completeExceptionally(new RuntimeException(errorMsg));
+                }
+              }
+            });
   }
 
   /**
@@ -377,67 +427,35 @@ public abstract class BundleDownloader {
   }
 
   /**
-   * Returns a BodyHandler that accumulates response bytes into a byte array, throwing
-   * BundleSizeLimitException mid-stream if the total exceeds maxBytes.
+   * Returns a BodyHandler that rejects oversized responses.
+   *
    */
   private static HttpResponse.BodyHandler<byte[]> sizeLimitedBodyHandler(long maxBytes) {
+    long cappedMax = Math.min(maxBytes, Integer.MAX_VALUE);
     return responseInfo -> {
-      SizeLimitedSubscriber subscriber = new SizeLimitedSubscriber(maxBytes);
-      return HttpResponse.BodySubscribers.fromSubscriber(subscriber, SizeLimitedSubscriber::getResult);
+      OptionalLong contentLength = responseInfo.headers().firstValueAsLong("Content-Length");
+      if (contentLength.isPresent() && contentLength.getAsLong() > cappedMax) {
+        return HttpResponse.BodySubscribers.mapping(
+            HttpResponse.BodySubscribers.discarding(),
+            ignored -> {
+              throw new BundleSizeLimitException(
+                  "Content-Length "
+                      + contentLength.getAsLong()
+                      + " exceeds limit of "
+                      + cappedMax
+                      + " bytes");
+            });
+      }
+      return HttpResponse.BodySubscribers.mapping(
+          HttpResponse.BodySubscribers.ofByteArray(),
+          bytes -> {
+            if (bytes.length > cappedMax) {
+              throw new BundleSizeLimitException(
+                  "Response body exceeds limit of " + cappedMax + " bytes");
+            }
+            return bytes;
+          });
     };
-  }
-
-  private static class SizeLimitedSubscriber implements Flow.Subscriber<List<ByteBuffer>> {
-    private final long maxBytes;
-    private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-    private Flow.Subscription subscription;
-    private Throwable error;
-
-    SizeLimitedSubscriber(long maxBytes) {
-      this.maxBytes = maxBytes;
-    }
-
-    @Override
-    public void onSubscribe(Flow.Subscription s) {
-      this.subscription = s;
-      s.request(Long.MAX_VALUE);
-    }
-
-    @Override
-    public void onNext(List<ByteBuffer> items) {
-      for (ByteBuffer bb : items) {
-        byte[] chunk = new byte[bb.remaining()];
-        bb.get(chunk);
-        buffer.write(chunk, 0, chunk.length);
-        if (buffer.size() > maxBytes) {
-          subscription.cancel();
-          error =
-              new BundleSizeLimitException(
-                  "Response body exceeds limit of " + maxBytes + " bytes");
-          return;
-        }
-      }
-    }
-
-    @Override
-    public void onError(Throwable t) {
-      if (error == null) {
-        error = t;
-      }
-    }
-
-    @Override
-    public void onComplete() {}
-
-    byte[] getResult() {
-      if (error instanceof RuntimeException) {
-        throw (RuntimeException) error;
-      }
-      if (error != null) {
-        throw new RuntimeException(error);
-      }
-      return buffer.toByteArray();
-    }
   }
 
   static class BundleSizeLimitException extends RuntimeException {

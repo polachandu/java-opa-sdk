@@ -2,17 +2,28 @@ package io.github.open_policy_agent.opa.plugins;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.http.HttpClient;
+import java.net.http.HttpResponse;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
@@ -98,10 +109,28 @@ class BundleDownloaderSecurityTest {
   }
 
   @Test
+  void download_contentLengthExceedsLimit_rejectsUpfront() throws Exception {
+    byte[] bundleData = createValidBundle();
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
+      exchange.getResponseHeaders().add("Content-Length", String.valueOf(bundleData.length));
+      exchange.sendResponseHeaders(200, bundleData.length);
+      exchange.getResponseBody().write(bundleData);
+      exchange.close();
+    });
+
+    long smallLimit = bundleData.length - 1;
+    ExecutionException ex = assertThrows(ExecutionException.class,
+        () -> runBundleDownload(server.getAddress().getPort(), smallLimit)
+            .get(10, TimeUnit.SECONDS));
+    assertTrue(ex.getCause().getMessage().contains("Content-Length"));
+    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
+  }
+
+  @Test
   void download_bodyExceedsLimitMidStream_fails() throws Exception {
     byte[] bundleData = createValidBundle();
     server = startServer(exchange -> {
-      // Omit Content-Length so the mid-stream check is exercised instead
       exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
       exchange.sendResponseHeaders(200, bundleData.length);
       exchange.getResponseBody().write(bundleData);
@@ -155,7 +184,6 @@ class BundleDownloaderSecurityTest {
 
     runBundleDownload(server.getAddress().getPort(), 512 * 1024 * 1024L)
         .get(10, TimeUnit.SECONDS);
-    // 304 means "not modified" — no bundle should have been activated into the store.
     assertNull(store.getBundles().get("authz"));
   }
 
@@ -186,12 +214,50 @@ class BundleDownloaderSecurityTest {
   }
 
   @Test
+  void download_maxSizeBytesAbove2GB_doesNotOOM() throws Exception {
+    byte[] bundleData = createValidBundle();
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
+      exchange.sendResponseHeaders(200, bundleData.length);
+      exchange.getResponseBody().write(bundleData);
+      exchange.close();
+    });
+
+    runBundleDownload(server.getAddress().getPort(), (long) Integer.MAX_VALUE + 1)
+        .get(10, TimeUnit.SECONDS);
+    assertNotNull(store.getBundles().get("authz"));
+  }
+
+  @Test
+  void download_largeResponseExceedsLimit_failsFast() throws Exception {
+    int chunkSize = 64 * 1024;  // 64 KB per chunk
+    int totalChunks = 20;       // 1.28 MB total
+    int totalSize = chunkSize * totalChunks;
+    long limit = 10 * 1024;     // 10 KB limit
+
+    server = startServer(exchange -> {
+      exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
+      exchange.sendResponseHeaders(200, totalSize);
+      byte[] chunk = new byte[chunkSize];
+      for (int i = 0; i < totalChunks; i++) {
+        exchange.getResponseBody().write(chunk);
+        exchange.getResponseBody().flush();
+      }
+      exchange.close();
+    });
+
+    ExecutionException ex = assertThrows(ExecutionException.class,
+        () -> runBundleDownload(server.getAddress().getPort(), limit)
+            .get(5, TimeUnit.SECONDS));
+    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
+  }
+
+  @Test
   void download_connectionDroppedMidStream_fails() throws Exception {
     byte[] bundleData = createValidBundle();
     server = startServer(exchange -> {
       exchange.getResponseHeaders().add("Content-Type", "application/vnd.openpolicyagent.bundles");
       exchange.sendResponseHeaders(200, bundleData.length * 2L);
-      // Write partial data then abruptly close, simulating a dropped connection
       exchange.getResponseBody().write(bundleData);
       exchange.getResponseBody().flush();
       exchange.close();
@@ -232,6 +298,92 @@ class BundleDownloaderSecurityTest {
 
     return bundlePlugin.getBundle("authz").getInitialActivation()
         .whenComplete((v, t) -> bundlePlugin.stop());
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void download_nonCompletionExceptionThrowable_usedDirectlyAsCause() throws Exception {
+    IOException directError = new IOException("Direct network failure — not wrapped");
+    CompletableFuture<HttpResponse<byte[]>> failedFuture = new CompletableFuture<>();
+    failedFuture.completeExceptionally(directError);
+
+    HttpClient mockClient = mock(HttpClient.class);
+    when(mockClient.sendAsync(any(), any())).thenReturn((CompletableFuture) failedFuture);
+
+    Config config = new Config();
+    config.setServices(Collections.singletonMap("test-service",
+        new Config.ServiceConfig().setName("test-service").setUrl("http://localhost:1")));
+    config.setBundles(Collections.singletonMap("authz",
+        new Config.BundleConfig()
+            .setService("test-service")
+            .setResource("/bundle.tar.gz")
+            .setMaxSizeBytes(512 * 1024 * 1024L)));
+
+    Logger logger = new Logger.StandardLogger();
+    PluginManager manager = new PluginManager.Builder()
+        .withId("test").withStore(new InMem()).withConfig(config).withLogger(logger).build();
+
+    BundleDownloader downloader = new BundleDownloader("authz", manager, null, mockClient) {
+      @Override protected void activateBundle(byte[] data) {}
+    };
+    downloader.setService("test-service").setResource("/bundle.tar.gz");
+
+    ScheduledExecutorService scheduler = BundleDownloader.newPollScheduler("test-scheduler");
+    try {
+      CompletableFuture<Void> activation = downloader.startPolling(scheduler);
+      ExecutionException ex = assertThrows(ExecutionException.class,
+          () -> activation.get(5, TimeUnit.SECONDS));
+      assertSame(directError, ex.getCause());
+    } finally {
+      scheduler.shutdownNow();
+    }
+  }
+
+  @Test
+  void download_chunkedBodyExceedsLimit_failsMidStream() throws Exception {
+    int chunkSize = 64 * 1024;   // 64 KB per chunk
+    int totalChunks = 20;        // 1.28 MB total
+    long limit = 10 * 1024;      // 10 KB limit
+
+    ServerSocket serverSocket = new ServerSocket(0);
+    int port = serverSocket.getLocalPort();
+
+    Thread serverThread = new Thread(() -> {
+      try (Socket conn = serverSocket.accept()) {
+        InputStream in = conn.getInputStream();
+        StringBuilder req = new StringBuilder();
+        int b;
+        while ((b = in.read()) != -1) {
+          req.append((char) b);
+          if (req.toString().endsWith("\r\n\r\n")) break;
+        }
+
+        OutputStream out = conn.getOutputStream();
+        out.write("HTTP/1.1 200 OK\r\n".getBytes());
+        out.write("Content-Type: application/vnd.openpolicyagent.bundles\r\n".getBytes());
+        out.write("Transfer-Encoding: chunked\r\n".getBytes());
+        out.write("\r\n".getBytes());
+
+        byte[] chunk = new byte[chunkSize];
+        for (int i = 0; i < totalChunks; i++) {
+          out.write((Integer.toHexString(chunk.length) + "\r\n").getBytes());
+          out.write(chunk);
+          out.write("\r\n".getBytes());
+          out.flush();
+        }
+        out.write("0\r\n\r\n".getBytes());
+        out.flush();
+      } catch (IOException ignored) {
+      } finally {
+        try { serverSocket.close(); } catch (IOException ignored) {}
+      }
+    });
+    serverThread.setDaemon(true);
+    serverThread.start();
+
+    ExecutionException ex = assertThrows(ExecutionException.class,
+        () -> runBundleDownload(port, limit).get(10, TimeUnit.SECONDS));
+    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
   }
 
   private HttpServer startServer(HttpHandler handler) throws IOException {

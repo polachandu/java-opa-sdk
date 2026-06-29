@@ -82,24 +82,27 @@ public class TarballBundleLoader implements BundleLoader {
           byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
           totalDecompressedBytes += entryBytes.length;
           assembler.loadPlan(new ByteArrayInputStream(entryBytes));
-        }
-        if (!entry.isDirectory()
+        } else if (!entry.isDirectory()
             && (entryName.equals("data.json") || entryName.endsWith("/data.json"))) {
           byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
           totalDecompressedBytes += entryBytes.length;
           int lastSlash = entryName.lastIndexOf('/');
           String dataPath = lastSlash < 0 ? "" : entryName.substring(0, lastSlash);
           assembler.loadData(dataPath, new ByteArrayInputStream(entryBytes));
-        }
-        if (!entry.isDirectory() && entryName.equals(".manifest")) {
+        } else if (!entry.isDirectory() && entryName.equals(".manifest")) {
           byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
           totalDecompressedBytes += entryBytes.length;
           assembler.loadManifest(new ByteArrayInputStream(entryBytes));
-        }
-        if (!entry.isDirectory() && entryName.endsWith(".rego")) {
+        } else if (!entry.isDirectory() && entryName.endsWith(".rego")) {
           byte[] entryBytes = readWithLimit(tarIn, maxDecompressedBytes - totalDecompressedBytes);
           totalDecompressedBytes += entryBytes.length;
           assembler.addRego(entryName, new String(entryBytes));
+        } else if (!entry.isDirectory()) {
+          long entrySize = Math.max(0, entry.getSize());
+          totalDecompressedBytes += entrySize;
+          if (totalDecompressedBytes > maxDecompressedBytes) {
+            throw new IOException("Decompressed bundle size exceeds the configured limit");
+          }
         }
       }
       return assembler.finish(id, store);
@@ -113,7 +116,8 @@ public class TarballBundleLoader implements BundleLoader {
       throw new IOException(
           "Decompressed bundle size exceeds the configured limit");
     }
-    byte[] bytes = in.readNBytes((int) Math.min(remaining + 1, Integer.MAX_VALUE));
+    int toRead = remaining >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) (remaining + 1);
+    byte[] bytes = in.readNBytes(toRead);
     if (bytes.length > remaining) {
       throw new IOException(
           "Decompressed bundle size exceeds the configured limit");
