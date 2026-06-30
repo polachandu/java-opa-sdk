@@ -342,11 +342,11 @@ public class Config {
      * into a Java {@code byte[]}, whose maximum length is {@link Integer#MAX_VALUE} (~2 GB):
      *
      * <ul>
-     *   <li><strong>HTTP download:</strong> the entire response is buffered in a single {@code
+     *   <li><strong>HTTP download:</strong> The entire response is buffered in a single {@code
      *       byte[]}, so the effective limit is capped at {@code Integer.MAX_VALUE} (~2 GB).
      *       Configured values above that are silently clamped to {@code Integer.MAX_VALUE} on the
      *       download path.
-     *   <li><strong>Decompressed tarball contents:</strong> the cumulative budget is tracked as a
+     *   <li><strong>Decompressed tarball contents:</strong> The cumulative budget is tracked as a
      *       {@code long} and may exceed 2 GB. Only each individual entry is bounded by the {@code
      *       byte[]} ceiling (~2 GB per entry); the sum across all entries can be larger.
      * </ul>

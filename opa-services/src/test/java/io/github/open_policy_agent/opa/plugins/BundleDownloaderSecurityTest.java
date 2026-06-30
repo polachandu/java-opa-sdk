@@ -299,6 +299,14 @@ class BundleDownloaderSecurityTest {
     int totalChunks = 20;        // 1.28 MB total
     long limit = 10 * 1024;      // 10 KB limit
 
+    int port = startRawChunkedServer(chunkSize, totalChunks);
+
+    ExecutionException ex = assertThrows(ExecutionException.class,
+        () -> runBundleDownload(port, limit).get(10, TimeUnit.SECONDS));
+    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
+  }
+
+  private int startRawChunkedServer(int chunkSize, int totalChunks) throws IOException {
     ServerSocket serverSocket = new ServerSocket(0);
     int port = serverSocket.getLocalPort();
 
@@ -334,10 +342,7 @@ class BundleDownloaderSecurityTest {
     });
     serverThread.setDaemon(true);
     serverThread.start();
-
-    ExecutionException ex = assertThrows(ExecutionException.class,
-        () -> runBundleDownload(port, limit).get(10, TimeUnit.SECONDS));
-    assertTrue(ex.getCause().getMessage().contains("exceeds limit"));
+    return port;
   }
 
   private HttpServer startServer(HttpHandler handler) throws IOException {

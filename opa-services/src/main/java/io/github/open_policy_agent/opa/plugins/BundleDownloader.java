@@ -301,14 +301,7 @@ public abstract class BundleDownloader {
   /**
    * Handle downloading from an HTTP/HTTPS URI.
    *
-   * <p>Uses {@link HttpClient#sendAsync} with a non-blocking {@code whenComplete} callback so that
-   * the scheduler thread is never blocked waiting for the response body. This is required for the
-   * mid-stream size limit to work: completing the body subscriber's future exceptionally in {@code
-   * onNext()} causes the {@code sendAsync()} {@link CompletableFuture} to complete immediately —
-   * without waiting for the remaining body bytes to arrive — and the callback processes the result.
-   * Blocking calls ({@code send()} or {@code sendAsync().get()}) always wait for the HTTP exchange
-   * to be fully done (all bytes consumed or connection closed), even if the body subscriber's
-   * future already completed.
+   * @param uri the URI to download from
    */
   private void handleHttpDownload(URI uri) {
     HttpRequest.Builder requestBuilder =
@@ -361,32 +354,8 @@ public abstract class BundleDownloader {
                   }
                   return;
                 }
-                byte[] body = response.body();
-                if (body == null) {
-                  // The body-handler mapping function threw (size limit exceeded), but some JDK
-                  // versions complete sendAsync() normally with a null body instead of propagating
-                  // the exception. Treat null body as a size limit violation.
-                  BundleSizeLimitException ex =
-                      new BundleSizeLimitException(
-                          "Response body exceeds limit of "
-                              + Math.min(maxSizeBytes, Integer.MAX_VALUE)
-                              + " bytes");
-                  manager.getLogger().error("Bundle '%s': Download error: %s", name, ex.getMessage());
-                  if (!initialActivation.isDone()) {
-                    initialActivation.completeExceptionally(ex);
-                  }
-                  return;
-                }
                 response.headers().firstValue("ETag").ifPresent(newEtag -> this.etag = newEtag);
-                try {
-                  activateBundle(body);
-                } catch (Exception e) {
-                  manager.getLogger().error("Bundle '%s': Activation failed: %s", name, e.getMessage());
-                  if (!initialActivation.isDone()) {
-                    initialActivation.completeExceptionally(e);
-                  }
-                  return;
-                }
+                activateBundle(response.body());
                 if (!initialActivation.isDone()) {
                   initialActivation.complete(null);
                 }
@@ -401,8 +370,8 @@ public abstract class BundleDownloader {
   }
 
   /**
-   * Returns true if the response Content-Type is acceptable for a bundle. A blank/absent value is
-   * tolerated
+   * Returns true if the response Content-Type is acceptable for a bundle.
+   * A blank/absent value is tolerated.
    */
   private static boolean isAcceptableContentType(String contentType) {
     if (contentType.isBlank()) {
@@ -414,7 +383,6 @@ public abstract class BundleDownloader {
 
   /**
    * Returns a BodyHandler that rejects oversized responses.
-   *
    */
   private static HttpResponse.BodyHandler<byte[]> sizeLimitedBodyHandler(long maxBytes) {
     long cappedMax = Math.min(maxBytes, Integer.MAX_VALUE);
