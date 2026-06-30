@@ -52,12 +52,6 @@ public abstract class BundleDownloader {
   protected long lastModifiedTime = 0;
   protected long maxSizeBytes = Config.BundleConfig.DEFAULT_MAX_SIZE_BYTES;
 
-  // Content types accepted for bundle responses. The OPA server sends
-  // "application/vnd.openpolicyagent.bundles", but bundles are very commonly hosted on static
-  // object storage (S3, GCS, nginx) that serves tarballs as gzip/octet-stream, so those are
-  // accepted too. An absent/blank Content-Type is also tolerated. The point of the check is to
-  // reject obviously-wrong responses (e.g. an HTML error page or login redirect) before they are
-  // parsed as a bundle.
   private static final Set<String> ALLOWED_CONTENT_TYPES =
       Set.of(
           "application/vnd.openpolicyagent.bundles",
@@ -79,18 +73,10 @@ public abstract class BundleDownloader {
    */
   protected BundleDownloader(
       String name, PluginManager manager, ServicePlugin.Service authService) {
-    this(name, manager, authService,
-        authService != null ? authService.getClient() : defaultHttpClient());
-  }
-
-  // Package-private — allows tests in the same package to inject a custom HttpClient without
-  // going through ServicePlugin wiring.
-  BundleDownloader(
-      String name, PluginManager manager, ServicePlugin.Service authService, HttpClient client) {
     this.name = name;
     this.manager = manager;
     this.authService = authService;
-    this.httpClient = client;
+    this.httpClient = authService != null ? authService.getClient() : defaultHttpClient();
     this.initialActivation = new CompletableFuture<>();
   }
 

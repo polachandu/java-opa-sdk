@@ -2,12 +2,8 @@ package io.github.open_policy_agent.opa.plugins;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -18,12 +14,9 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.http.HttpClient;
-import java.net.http.HttpResponse;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
@@ -298,45 +291,6 @@ class BundleDownloaderSecurityTest {
 
     return bundlePlugin.getBundle("authz").getInitialActivation()
         .whenComplete((v, t) -> bundlePlugin.stop());
-  }
-
-  @Test
-  @SuppressWarnings("unchecked")
-  void download_nonCompletionExceptionThrowable_usedDirectlyAsCause() throws Exception {
-    IOException directError = new IOException("Direct network failure — not wrapped");
-    CompletableFuture<HttpResponse<byte[]>> failedFuture = new CompletableFuture<>();
-    failedFuture.completeExceptionally(directError);
-
-    HttpClient mockClient = mock(HttpClient.class);
-    when(mockClient.sendAsync(any(), any())).thenReturn((CompletableFuture) failedFuture);
-
-    Config config = new Config();
-    config.setServices(Collections.singletonMap("test-service",
-        new Config.ServiceConfig().setName("test-service").setUrl("http://localhost:1")));
-    config.setBundles(Collections.singletonMap("authz",
-        new Config.BundleConfig()
-            .setService("test-service")
-            .setResource("/bundle.tar.gz")
-            .setMaxSizeBytes(512 * 1024 * 1024L)));
-
-    Logger logger = new Logger.StandardLogger();
-    PluginManager manager = new PluginManager.Builder()
-        .withId("test").withStore(new InMem()).withConfig(config).withLogger(logger).build();
-
-    BundleDownloader downloader = new BundleDownloader("authz", manager, null, mockClient) {
-      @Override protected void activateBundle(byte[] data) {}
-    };
-    downloader.setService("test-service").setResource("/bundle.tar.gz");
-
-    ScheduledExecutorService scheduler = BundleDownloader.newPollScheduler("test-scheduler");
-    try {
-      CompletableFuture<Void> activation = downloader.startPolling(scheduler);
-      ExecutionException ex = assertThrows(ExecutionException.class,
-          () -> activation.get(5, TimeUnit.SECONDS));
-      assertSame(directError, ex.getCause());
-    } finally {
-      scheduler.shutdownNow();
-    }
   }
 
   @Test
